@@ -59,4 +59,16 @@ public class BillboardController {
     public ResponseEntity<List<Listing>> getBillboard() {
         return ResponseEntity.ok(billboardService.getActiveListings());
     }
+
+    @GetMapping("/test-broadcast")
+    public ResponseEntity<String> testBroadcast() {
+
+        billboardService.broadcastUpdatedBillboard();
+
+        return ResponseEntity.ok("Broadcast sent");
+    }
+    @GetMapping("/hello")
+    public ResponseEntity<String> hello() {
+        return ResponseEntity.ok("BILLBOARD CONTROLLER IS WORKING");
+    }
 }
