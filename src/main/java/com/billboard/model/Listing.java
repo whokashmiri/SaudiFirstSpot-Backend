@@ -32,6 +32,8 @@ public class Listing {
 
     private String email;
 
+    private String product;
+
     private BigDecimal amount;
 
     private String details;

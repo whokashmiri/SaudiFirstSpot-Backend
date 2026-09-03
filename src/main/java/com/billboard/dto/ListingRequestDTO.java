@@ -27,6 +27,9 @@ public class ListingRequestDTO {
     @DecimalMin(value = "1.00", message = "amount must be at least 1.00 SAR")
     private BigDecimal amount;
 
+    @NotBlank(message = "product  is required")
+    private String product;
+
     @NotBlank(message = "details is required")
     private String details;
 }

@@ -75,6 +75,7 @@ public class BillboardService {
         Listing listing = Listing.builder()
                 .email(dto.getEmail())
                 .amount(dto.getAmount())
+                .product(dto.getProduct())
                 .details(dto.getDetails())
                 .status(Listing.Status.PENDING)
                 .createdAt(LocalDateTime.now())
