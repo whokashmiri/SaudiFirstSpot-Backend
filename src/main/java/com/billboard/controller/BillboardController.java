@@ -9,6 +9,7 @@ import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.GetMapping;
+import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
@@ -60,15 +61,15 @@ public class BillboardController {
         return ResponseEntity.ok(billboardService.getActiveListings());
     }
 
-    @GetMapping("/test-broadcast")
-    public ResponseEntity<String> testBroadcast() {
-
-        billboardService.broadcastUpdatedBillboard();
-
-        return ResponseEntity.ok("Broadcast sent");
-    }
-    @GetMapping("/hello")
-    public ResponseEntity<String> hello() {
-        return ResponseEntity.ok("BILLBOARD CONTROLLER IS WORKING");
+    /**
+     * Lets the frontend poll a single listing's real, webhook-confirmed
+     * status after the payer returns from checkout. This is the only
+     * trustworthy source of "did it actually get paid" — the redirect
+     * URL's own query params must never be treated as proof of payment.
+     */
+    @GetMapping("/status/{id}")
+    public ResponseEntity<Map<String, String>> getStatus(@PathVariable String id) {
+        Listing listing = billboardService.getListingById(id);
+        return ResponseEntity.ok(Map.of("status", listing.getStatus().name()));
     }
 }

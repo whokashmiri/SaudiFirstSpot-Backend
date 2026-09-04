@@ -11,6 +11,7 @@ import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.http.HttpEntity;
 import org.springframework.http.HttpHeaders;
+import org.springframework.http.HttpMethod;
 import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
 import org.springframework.messaging.simp.SimpMessagingTemplate;
@@ -24,7 +25,7 @@ import java.time.LocalDateTime;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
-import org.springframework.messaging.simp.SimpMessagingTemplate;
+
 /**
  * Orchestrates the full listing lifecycle: creating a {@code PENDING}
  * listing and Moyasar payment, reconciling Moyasar's webhook notification,
@@ -46,36 +47,33 @@ public class BillboardService {
     @Value("${moyasar.secret-key}")
     private String moyasarSecretKey;
 
+    /** Server-to-server notification URL Moyasar POSTs the invoice to once paid. */
     @Value("${moyasar.callback-url}")
     private String moyasarCallbackUrl;
 
+    /** Browser redirect URL the payer lands on after completing checkout. */
     @Value("${moyasar.success-url}")
     private String moyasarSuccessUrl;
 
     /**
-     * Creates a {@code PENDING} listing and initiates a matching payment
-     * with Moyasar, returning the URL the frontend should redirect the user
-     * to in order to complete checkout.
+     * Creates a {@code PENDING} listing and a matching Moyasar <b>Invoice</b>,
+     * returning the hosted checkout URL the frontend should redirect the
+     * user to.
      *
-     * <p>Note: Moyasar's Payment API expects card details to accompany a
-     * {@code creditcard} source (typically supplied client-side via
-     * Moyasar.js/Elements, which returns a one-time token or callback that
-     * yields a {@code transaction_url} for 3-D Secure redirection). If your
-     * integration instead needs a fully hosted checkout page generated
-     * server-side, use Moyasar's Invoice API
-     * ({@code POST /v1/invoices}, which returns a {@code url} field) rather
-     * than the Payments API. This method follows the Payments API contract
-     * as specified; adjust the request/response mapping below if you adopt
-     * the Invoice API instead.</p>
+     * <p>This uses Moyasar's Invoice API ({@code POST /v1/invoices}) rather
+     * than the Payments API: Invoices don't require card details up front
+     * and return a ready-to-use {@code url} for a hosted payment page,
+     * which fits a server-driven "redirect to pay" flow. Moyasar notifies
+     * {@code callback_url} server-to-server when the invoice is paid, and
+     * separately redirects the payer's browser to {@code success_url}.</p>
      *
      * @param dto validated listing submission from the client
-     * @return the Moyasar checkout/transaction URL to redirect the user to
+     * @return the Moyasar checkout URL to redirect the user to
      */
     public PaymentResponseDTO initiateListingPayment(ListingRequestDTO dto) {
         Listing listing = Listing.builder()
                 .email(dto.getEmail())
                 .amount(dto.getAmount())
-                .product(dto.getProduct())
                 .details(dto.getDetails())
                 .status(Listing.Status.PENDING)
                 .createdAt(LocalDateTime.now())
@@ -83,7 +81,9 @@ public class BillboardService {
         listing = listingRepository.save(listing);
 
         long amountInHalalas = toHalalas(dto.getAmount());
-        Map<String, Object> requestBody = buildMoyasarInvoiceRequest(amountInHalalas, dto.getDetails());
+
+        Map<String, Object> requestBody = buildMoyasarInvoiceRequest(
+                amountInHalalas, dto.getDetails(), listing.getId());
         HttpEntity<Map<String, Object>> request = new HttpEntity<>(requestBody, buildMoyasarHeaders());
 
         Map<?, ?> responseBody = callMoyasar(request, listing);
@@ -97,8 +97,6 @@ public class BillboardService {
         listingRepository.save(listing);
 
         return new PaymentResponseDTO(checkoutUrl);
-
-
     }
 
     /**
@@ -153,6 +151,68 @@ public class BillboardService {
         return listingRepository.findByStatusOrderByAmountDesc(Listing.Status.SUCCESS);
     }
 
+    /**
+     * Looks up a single listing by its Mongo id for the frontend's
+     * post-checkout "verifying payment" screen. If the listing is still
+     * {@code PENDING}, actively re-checks the real status directly with
+     * Moyasar first — this makes status checks self-healing even if the
+     * webhook never arrived (wrong URL, dropped request, etc.), instead of
+     * leaving the listing stuck forever waiting for a notification that's
+     * never coming.
+     */
+    public Listing getListingById(String id) {
+        Listing listing = listingRepository.findById(id)
+                .orElseThrow(() -> new ListingNotFoundException("No listing found for id=" + id));
+
+        if (listing.getStatus() == Listing.Status.PENDING && listing.getGatewayPaymentId() != null) {
+            listing = reconcileWithGateway(listing);
+        }
+        return listing;
+    }
+
+    /**
+     * Fetches the invoice directly from Moyasar and updates our local
+     * record to match, in case the webhook notification never arrived.
+     * Broadcasts the refreshed billboard if this flips the listing to
+     * {@code SUCCESS}.
+     */
+    private Listing reconcileWithGateway(Listing listing) {
+        String url = MOYASAR_INVOICES_URL + "/" + listing.getGatewayPaymentId();
+        HttpEntity<Void> request = new HttpEntity<>(buildMoyasarHeaders());
+
+        Map<?, ?> body;
+        try {
+            ResponseEntity<Map> response = restTemplate.exchange(url, HttpMethod.GET, request, Map.class);
+            body = response.getBody();
+        } catch (RestClientException ex) {
+            log.warn("Could not reconcile listing {} with Moyasar: {}", listing.getId(), ex.getMessage());
+            return listing;
+        }
+
+        if (body == null) {
+            return listing;
+        }
+
+        Object statusValue = body.get("status");
+        String status = statusValue == null ? null : statusValue.toString();
+        Listing.Status resolvedStatus = PAID_STATUS.equalsIgnoreCase(status)
+                ? Listing.Status.SUCCESS
+                : null; // Moyasar invoice statuses like "initiated" mean still pending — leave as-is.
+
+        if (resolvedStatus == null) {
+            return listing;
+        }
+
+        listing.setStatus(resolvedStatus);
+        listing = listingRepository.save(listing);
+
+        log.info("Listing {} reconciled to {} directly from Moyasar (gatewayPaymentId={})",
+                listing.getId(), resolvedStatus, listing.getGatewayPaymentId());
+
+        broadcastUpdatedBillboard();
+        return listing;
+    }
+
     // ---------------------------------------------------------------------
     // Internal helpers
     // ---------------------------------------------------------------------
@@ -164,16 +224,21 @@ public class BillboardService {
                 .longValueExact();
     }
 
-    private Map<String, Object> buildMoyasarInvoiceRequest(long amountInHalalas, String description) {
-        Map<String, Object> source = new HashMap<>();
-        source.put("type", "creditcard");
-
+    private Map<String, Object> buildMoyasarInvoiceRequest(
+            long amountInHalalas, String description, String listingId) {
         Map<String, Object> body = new HashMap<>();
         body.put("amount", amountInHalalas);
         body.put("currency", "SAR");
         body.put("description", description);
+        // Server-to-server "it's paid" notification, handled by handleGatewayWebhook().
         body.put("callback_url", moyasarCallbackUrl);
-        body.put("source", source);
+        // Browser redirect after the payer finishes checkout. We tag our own
+        // listingId onto it so the frontend knows which listing to verify —
+        // never trust Moyasar's own status/message query params here, since
+        // anyone could hand-craft that URL. The webhook is the only source
+        // of truth for whether payment actually succeeded.
+        String separator = moyasarSuccessUrl.contains("?") ? "&" : "?";
+        body.put("success_url", moyasarSuccessUrl + separator + "listingId=" + listingId);
         return body;
     }
 
@@ -201,8 +266,6 @@ public class BillboardService {
             throw new GatewayException("Failed to reach Moyasar payment gateway: " + ex.getMessage(), ex);
         }
     }
-
-
 
     private String requireString(Map<?, ?> map, String key, String errorMessage) {
         Object value = map.get(key);

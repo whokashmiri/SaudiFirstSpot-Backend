@@ -15,8 +15,12 @@ moyasar:
   secret-key: ${MOYASAR_SECRET_KEY:sk_test_cCAkyQQ6bDPVrosibnKjxVp5BizYux7jD6Rnz3WS}
   # Public URL Moyasar should redirect/notify back to after payment.
   # Must be reachable from the internet (e.g. via ngrok in local dev).
-  callback-url: ${MOYASAR_CALLBACK_URL:http://localhost:8080/api/billboard/webhook}
-  success-url: ${MOYASAR_SUCCESS_URL:http://localhost:8080/api/billboard
+  callback-url: ${MOYASAR_CALLBACK_URL:https://xxxx.ngrok-free.app/api/billboard/webhook}
+#  success-url: ${MOYASAR_SUCCESS_URL:http://localhost:8080/api/billboard
+  success-url: ${MOYASAR_SUCCESS_URL:http://localhost:5173/api/billboard}
+#  MOYASAR_CALLBACK_URL=https://xxxx.ngrok-free.app/api/billboard/webhook
+#  MOYASAR_SUCCESS_URL=http://localhost:5173
+
 
 logging:
   level:
