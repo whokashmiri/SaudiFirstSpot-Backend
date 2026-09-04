@@ -61,12 +61,7 @@ public class BillboardController {
         return ResponseEntity.ok(billboardService.getActiveListings());
     }
 
-    /**
-     * Lets the frontend poll a single listing's real, webhook-confirmed
-     * status after the payer returns from checkout. This is the only
-     * trustworthy source of "did it actually get paid" — the redirect
-     * URL's own query params must never be treated as proof of payment.
-     */
+
     @GetMapping("/status/{id}")
     public ResponseEntity<Map<String, String>> getStatus(@PathVariable String id) {
         Listing listing = billboardService.getListingById(id);
